@@ -6,8 +6,11 @@
 #include <net/ethernet.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <unordered_map>
+#include <pthread.h>
 #include "IEEE80211.h"
 #define MAX_SSID_LEN 32
+#define REFRESH_TIME_INTERVAL 500000 // us
 
 struct ap_info
 {
@@ -18,6 +21,8 @@ struct ap_info
     unsigned int        data_rate;
     u_char              ssid[MAX_SSID_LEN + 1];
 };
+
+std::unordered_map<unsigned int, struct ap_info> ap_info_map;
 
 namespace neolib
 {
@@ -62,6 +67,42 @@ namespace neolib
     }
 }
 
+unsigned int ether_addr_hasher(struct ether_addr addr)
+{
+    unsigned int hash;
+    int i;
+
+    hash = 0;
+
+    for(i=0;i<ETHER_ADDR_LEN;i++)
+    {
+        hash = (hash << 8) | (addr.octet[i]); 
+    }
+
+    return hash;
+}
+    
+void *print_ap_info(void *)
+{
+    struct ap_info ap_info;
+    while(true)
+    {
+        system("clear");
+
+        printf("%-20s%-10s%-10s%-10s%-18s%-20s\n", "BSSID", "Signal", "Noise", "Channel", "DataRate(Mb/s)", "SSID");
+        for(std::pair<int, struct ap_info> element : ap_info_map)
+        {
+            ap_info = element.second;
+            printf("%-20s%-10d%-10d%-10d%-18d%-20s\n", ether_ntoa(&ap_info.bssid), ap_info.ssi_signal, ap_info.ssi_noise, ap_info.channel, ap_info.data_rate, ap_info.ssid);
+        }
+        fflush(stdout);
+
+        usleep(REFRESH_TIME_INTERVAL);
+    }
+    pthread_exit((void *) 0);
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     char *                  interface;
@@ -76,6 +117,7 @@ int main(int argc, char **argv)
     IEEE80211_mgt_pkt *     mgt_pkt;
     u_char *                tagged_param;
     unsigned int            ssid_len;
+    pthread_t               thread;
 
     google::InitGoogleLogging(argv[0]);
 
@@ -145,6 +187,8 @@ int main(int argc, char **argv)
     }
     LOG(INFO) << "pcap_setfilter : succeed";
 
+    pthread_create(&thread, NULL, &print_ap_info, NULL);
+
     while((res = pcap_next_ex(handle, &header, &packet)) >= 0)
     {
         if(res == 0)
@@ -154,8 +198,8 @@ int main(int argc, char **argv)
         }
         LOG(INFO) << "pcap_next_ex : succeed";
 
-        neolib::hex_dump(packet, header->len, std::cout);
-        printf("\n\n");   
+        //neolib::hex_dump(packet, header->len, std::cout);
+        //printf("\n\n");   
 
         subtype = ntohs(*(uint16_t *)(packet + 25));
 
@@ -191,6 +235,8 @@ int main(int argc, char **argv)
             ap_info.channel     = (mgt_pkt->radiotap_hdr.frequency - 2407) / 5;
             ap_info.data_rate   = mgt_pkt->radiotap_hdr.data_rate / 2;
 
+            ap_info_map.insert(std::make_pair(ether_addr_hasher(ap_info.bssid), ap_info));
+            /*
             printf("%-29s : %s\n", "BSSID", ether_ntoa(&ap_info.bssid));
             printf("%-29s : %d\n", "SSI Signal", (signed char) mgt_pkt->radiotap_hdr.signal);
             printf("%-29s : %d\n", "SSI Noise", (signed char) mgt_pkt->radiotap_hdr.noise);
@@ -198,16 +244,18 @@ int main(int argc, char **argv)
             printf("%-29s : %d (Mb/s)\n", "Data rate", mgt_pkt->radiotap_hdr.data_rate / 2);
             printf("%-29s : %s\n", "SSID", ap_info.ssid);
             printf("\n\n");
+            */
 
             LOG(INFO) << "management packet parsing : succeed";
         }
         // (type data)
         else
         {
-            printf("(type data)\n");
+            //printf("(type data)\n");
         }
     }
     
+    pthread_cancel(thread);
     pcap_close(handle);
 
     return 0;
