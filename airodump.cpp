@@ -3,10 +3,21 @@
 #include <glog/logging.h>
 #include <iostream>
 #include <string>
+#include <net/ethernet.h>
 #include <arpa/inet.h>
 #include <string.h>
 #include "IEEE80211.h"
 #define MAX_SSID_LEN 32
+
+struct ap_info
+{
+    struct ether_addr   bssid;
+    signed char         ssi_signal;
+    signed char         ssi_noise;
+    uint8_t             channel;
+    unsigned int        data_rate;
+    u_char              ssid[MAX_SSID_LEN + 1];
+};
 
 namespace neolib
 {
@@ -60,11 +71,11 @@ int main(int argc, char **argv)
     int                     res;
     struct pcap_pkthdr *    header;
     const u_char *          packet;
+    struct ap_info          ap_info;
     uint16_t                subtype;
     IEEE80211_mgt_pkt *     mgt_pkt;
     u_char *                tagged_param;
     unsigned int            ssid_len;
-    char                    ssid[MAX_SSID_LEN+1];
 
     google::InitGoogleLogging(argv[0]);
 
@@ -156,33 +167,39 @@ int main(int argc, char **argv)
 
             while(true)
             {
-                if(*tagged_param == 0)
+                if(*tagged_param == IEEE80211_MANAGEMENT_TAG_SSID )
                 {
                     ssid_len = *(tagged_param + 1);
                     if(ssid_len < 2)
                     {
-                        strcpy(ssid, "<length : ?>");
+                        strcpy((char *)ap_info.ssid, "<length : ?>");
                     }
                     else
                     {
-                        strncpy(ssid, (char *)tagged_param + 2, ssid_len);
-                        ssid[ssid_len] = '\0';
+                        strncpy((char *)ap_info.ssid, (char *)tagged_param + 2, ssid_len);
+                        ap_info.ssid[ssid_len] = '\0';
                     }
                     break;
                 }
 
                 tagged_param += *(tagged_param + 1) + 2;
             }
+            
+            ap_info.bssid       = mgt_pkt->IEEE80211_hdr.bssid;
+            ap_info.ssi_signal  = (signed char) mgt_pkt->radiotap_hdr.signal;
+            ap_info.ssi_noise   = (signed char) mgt_pkt->radiotap_hdr.noise;
+            ap_info.channel     = (mgt_pkt->radiotap_hdr.frequency - 2407) / 5;
+            ap_info.data_rate   = mgt_pkt->radiotap_hdr.data_rate / 2;
 
-            LOG(INFO) << "parsing start";
-            printf("%-29s : %s\n", "BSSID", ether_ntoa(&mgt_pkt->IEEE80211_hdr.bssid));
+            printf("%-29s : %s\n", "BSSID", ether_ntoa(&ap_info.bssid));
             printf("%-29s : %d\n", "SSI Signal", (signed char) mgt_pkt->radiotap_hdr.signal);
             printf("%-29s : %d\n", "SSI Noise", (signed char) mgt_pkt->radiotap_hdr.noise);
             printf("%-29s : %d\n", "Channel", (mgt_pkt->radiotap_hdr.frequency - 2407)/5);
-            printf("%-29s : %d (Mb/s)\n", "Data rate", mgt_pkt->radiotap_hdr.data_rate);
-            printf("%-29s : %s\n", "SSID", ssid);
+            printf("%-29s : %d (Mb/s)\n", "Data rate", mgt_pkt->radiotap_hdr.data_rate / 2);
+            printf("%-29s : %s\n", "SSID", ap_info.ssid);
             printf("\n\n");
-            LOG(INFO) << "parsing end";
+
+            LOG(INFO) << "management packet parsing : succeed";
         }
         // (type data)
         else

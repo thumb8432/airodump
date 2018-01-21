@@ -1,7 +1,8 @@
 #include <net/ethernet.h>
 
-#define IEEE80211_SUBTYPE_PROBERESP    0x5000
-#define IEEE80211_SUBTYPE_BEACON       0x8000
+#define IEEE80211_SUBTYPE_PROBERESP         0x5000
+#define IEEE80211_SUBTYPE_BEACON            0x8000
+#define IEEE80211_MANAGEMENT_TAG_SSID       0x00
 
 struct radiotap_hdr
 {
