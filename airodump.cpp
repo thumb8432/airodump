@@ -3,6 +3,10 @@
 #include <glog/logging.h>
 #include <iostream>
 #include <string>
+#include <arpa/inet.h>
+#include <string.h>
+#include "IEEE80211.h"
+#define MAX_SSID_LEN 32
 
 namespace neolib
 {
@@ -53,21 +57,27 @@ int main(int argc, char **argv)
     pcap_t *                handle;
     char                    errbuf[PCAP_ERRBUF_SIZE];
     struct bpf_program      fp;
-    bpf_u_int32             net;
     int                     res;
     struct pcap_pkthdr *    header;
     const u_char *          packet;
+    uint16_t                subtype;
+    IEEE80211_mgt_pkt *     mgt_pkt;
+    u_char *                tagged_param;
+    unsigned int            ssid_len;
+    char                    ssid[MAX_SSID_LEN+1];
 
     google::InitGoogleLogging(argv[0]);
 
     if(argc != 2)
     {
-        LOG(FATAL) << "Usage : " << argv[0] << " <interface>";
+        LOG(ERROR) << "Usage : " << argv[0] << " <interface>";
         return -1;
     }
 
     interface = argv[1];
 
+    // pcap handle이 active 상태이면 pcap_set_rfmon 등 세팅 불가능
+    // pcap_create -> pcap_set_* -> pcap_activate
     if((handle = pcap_create(interface, errbuf)) == NULL)
     {
         LOG(FATAL) << "pcap_create : failed";
@@ -126,9 +136,59 @@ int main(int argc, char **argv)
 
     while((res = pcap_next_ex(handle, &header, &packet)) >= 0)
     {
-        printf("packet length : %d\n", header->len);
+        if(res == 0)
+        {
+            LOG(INFO) << "pcap_next_ex : timeout";
+            continue;
+        }
+        LOG(INFO) << "pcap_next_ex : succeed";
+
         neolib::hex_dump(packet, header->len, std::cout);
-        printf("\n\n");
+        printf("\n\n");   
+
+        subtype = ntohs(*(uint16_t *)(packet + 25));
+
+        // (type mgt subtype probe-resp) or (type mgt subtype beacon)
+        if(subtype == IEEE80211_SUBTYPE_PROBERESP || subtype == IEEE80211_SUBTYPE_BEACON)
+        {
+            mgt_pkt = (IEEE80211_mgt_pkt *) packet;
+            tagged_param = (u_char *)packet + sizeof(IEEE80211_mgt_pkt);
+
+            while(true)
+            {
+                if(*tagged_param == 0)
+                {
+                    ssid_len = *(tagged_param + 1);
+                    if(ssid_len < 2)
+                    {
+                        strcpy(ssid, "<length : ?>");
+                    }
+                    else
+                    {
+                        strncpy(ssid, (char *)tagged_param + 2, ssid_len);
+                        ssid[ssid_len] = '\0';
+                    }
+                    break;
+                }
+
+                tagged_param += *(tagged_param + 1) + 2;
+            }
+
+            LOG(INFO) << "parsing start";
+            printf("%-29s : %s\n", "BSSID", ether_ntoa(&mgt_pkt->IEEE80211_hdr.bssid));
+            printf("%-29s : %d\n", "SSI Signal", (signed char) mgt_pkt->radiotap_hdr.signal);
+            printf("%-29s : %d\n", "SSI Noise", (signed char) mgt_pkt->radiotap_hdr.noise);
+            printf("%-29s : %d\n", "Channel", (mgt_pkt->radiotap_hdr.frequency - 2407)/5);
+            printf("%-29s : %d (Mb/s)\n", "Data rate", mgt_pkt->radiotap_hdr.data_rate);
+            printf("%-29s : %s\n", "SSID", ssid);
+            printf("\n\n");
+            LOG(INFO) << "parsing end";
+        }
+        // (type data)
+        else
+        {
+            printf("(type data)\n");
+        }
     }
     
     pcap_close(handle);
