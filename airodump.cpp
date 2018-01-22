@@ -6,14 +6,20 @@
 #include <net/ethernet.h>
 #include <arpa/inet.h>
 #include <string.h>
-#include <unordered_map>
+#include <map>
 #include <pthread.h>
 #include "IEEE80211.h"
-#define MAX_SSID_LEN 32
-#define REFRESH_TIME_INTERVAL 500000 // us
+
+#define MAX_SSID_LEN                32
+#define REFRESH_TIME_INTERVAL       500000  // us
+#define AP_INFO_EXPIRE_TIME_LIMIT   10      // s
 
 struct ap_info
 {
+    unsigned int        first_time;
+    unsigned int        last_time;
+    unsigned int        beacon_pkt_num;
+    unsigned int        data_pkt_num;
     struct ether_addr   bssid;
     signed char         ssi_signal;
     signed char         ssi_noise;
@@ -22,7 +28,7 @@ struct ap_info
     u_char              ssid[MAX_SSID_LEN + 1];
 };
 
-std::unordered_map<unsigned int, struct ap_info> ap_info_map;
+std::map<unsigned int, struct ap_info> ap_info_map;
 
 namespace neolib
 {
@@ -85,17 +91,30 @@ unsigned int ether_addr_hasher(struct ether_addr addr)
 void *print_ap_info(void *)
 {
     struct ap_info ap_info;
+    std::vector<unsigned int> keys;
+    int i;
     while(true)
     {
         system("clear");
 
-        printf("%-20s%-10s%-10s%-10s%-18s%-20s\n", "BSSID", "Signal", "Noise", "Channel", "DataRate(Mb/s)", "SSID");
+        printf("%-20s%-10s%-12s%-10s%-10s%-10s%-10s%-10s%-18s%-20s\n", "BSSID", "#Beacon", "#Beacon/s", "#Data", "#Data/s", "Signal", "Noise", "Channel", "DataRate(Mb/s)", "SSID");
         for(std::pair<int, struct ap_info> element : ap_info_map)
         {
             ap_info = element.second;
-            printf("%-20s%-10d%-10d%-10d%-18d%-20s\n", ether_ntoa(&ap_info.bssid), ap_info.ssi_signal, ap_info.ssi_noise, ap_info.channel, ap_info.data_rate, ap_info.ssid);
+
+            printf("%-20s%-10d%-12.01f%-10d%-10.01f%-10d%-10d%-10d%-18d%-20s\n", ether_ntoa(&ap_info.bssid), ap_info.beacon_pkt_num, (double)ap_info.beacon_pkt_num/(time(NULL)-ap_info.first_time), ap_info.data_pkt_num, (double)ap_info.data_pkt_num/(time(NULL)-ap_info.first_time), ap_info.ssi_signal, ap_info.ssi_noise, ap_info.channel, ap_info.data_rate, ap_info.ssid);
+
+            if(ap_info.last_time < time(NULL) - AP_INFO_EXPIRE_TIME_LIMIT)
+            {
+                keys.push_back(element.first);
+            }
         }
         fflush(stdout);
+
+        for(i=0;i<(int)keys.size();i++)
+        {
+            ap_info_map.erase(keys[i]);
+        }
 
         usleep(REFRESH_TIME_INTERVAL);
     }
@@ -201,7 +220,7 @@ int main(int argc, char **argv)
         //neolib::hex_dump(packet, header->len, std::cout);
         //printf("\n\n");   
 
-        subtype = ntohs(*(uint16_t *)(packet + 25));
+        subtype = ntohs(*(uint16_t *)(packet + sizeof(struct radiotap_hdr)));
 
         // (type mgt subtype probe-resp) or (type mgt subtype beacon)
         if(subtype == IEEE80211_SUBTYPE_PROBERESP || subtype == IEEE80211_SUBTYPE_BEACON)
@@ -211,10 +230,12 @@ int main(int argc, char **argv)
 
             while(true)
             {
-                if(*tagged_param == IEEE80211_MANAGEMENT_TAG_SSID )
+                switch(*tagged_param)
                 {
+                case IEEE80211_MANAGEMENT_TAG_SSID:
+                    
                     ssid_len = *(tagged_param + 1);
-                    if(ssid_len < 2)
+                    if(ssid_len < 3)
                     {
                         strcpy((char *)ap_info.ssid, "<length : ?>");
                     }
@@ -224,18 +245,64 @@ int main(int argc, char **argv)
                         ap_info.ssid[ssid_len] = '\0';
                     }
                     break;
+
+                case IEEE80211_MANAGEMENT_TAG_CHANNEL:
+
+                    ap_info.channel = tagged_param[2];
+                    break;
+
+                case IEEE80211_MANAGEMENT_TAG_SUP_DATA_RATE:
+                case IEEE80211_MANAGEMENT_TAG_EXT_DATA_RATE:
+
+                    ap_info.data_rate = (tagged_param[1 + tagged_param[1]] & 0x7F) >> 1;
+                    break;
                 }
 
                 tagged_param += *(tagged_param + 1) + 2;
+
+                if(tagged_param > packet + header->len)
+                {
+                    break;
+                }
             }
             
+            ap_info.last_time   = time(NULL);
             ap_info.bssid       = mgt_pkt->IEEE80211_hdr.bssid;
             ap_info.ssi_signal  = (signed char) mgt_pkt->radiotap_hdr.signal;
             ap_info.ssi_noise   = (signed char) mgt_pkt->radiotap_hdr.noise;
-            ap_info.channel     = (mgt_pkt->radiotap_hdr.frequency - 2407) / 5;
-            ap_info.data_rate   = mgt_pkt->radiotap_hdr.data_rate / 2;
 
-            ap_info_map.insert(std::make_pair(ether_addr_hasher(ap_info.bssid), ap_info));
+            if(ap_info_map.find(ether_addr_hasher(ap_info.bssid)) == ap_info_map.end())   
+            {
+                ap_info.first_time = time(NULL);
+                if(subtype == IEEE80211_SUBTYPE_BEACON)
+                {
+                    ap_info.beacon_pkt_num  = 1;
+                    ap_info.data_pkt_num    = 0;
+                }
+                else
+                {
+                    ap_info.beacon_pkt_num  = 0;
+                    ap_info.data_pkt_num    = 0;
+                }
+
+                ap_info_map[ether_addr_hasher(ap_info.bssid)] = ap_info;
+            }
+            else
+            {
+                ap_info.first_time = ap_info_map[ether_addr_hasher(ap_info.bssid)].first_time;
+
+                if(subtype == IEEE80211_SUBTYPE_BEACON)
+                {
+                    ap_info.beacon_pkt_num = ap_info_map[ether_addr_hasher(ap_info.bssid)].beacon_pkt_num + 1;
+                }
+                else
+                {
+                    ap_info.beacon_pkt_num = ap_info_map[ether_addr_hasher(ap_info.bssid)].beacon_pkt_num;
+                }
+
+                ap_info_map[ether_addr_hasher(ap_info.bssid)] = ap_info;
+            }
+
             /*
             printf("%-29s : %s\n", "BSSID", ether_ntoa(&ap_info.bssid));
             printf("%-29s : %d\n", "SSI Signal", (signed char) mgt_pkt->radiotap_hdr.signal);
