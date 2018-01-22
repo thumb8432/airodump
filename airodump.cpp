@@ -12,8 +12,8 @@
 
 #define MAX_SSID_LEN                        32
 #define REFRESH_TIME_INTERVAL               500000  // us
-#define PACKET_NUM_EXPIRE_TIME_INTERVAL     5       // s
-#define AP_INFO_EXPIRE_TIME_LIMIT           10      // s
+#define PACKET_NUM_EXPIRE_TIME_INTERVAL     100     // s
+#define AP_INFO_EXPIRE_TIME_LIMIT           3       // s
 
 struct ap_info
 {
@@ -150,6 +150,9 @@ int main(int argc, char **argv)
     u_char *                tagged_param;
     unsigned int            ssid_len;
     pthread_t               thread;
+    u_char *                data_pkt;
+    uint8_t                 ds_status;
+    struct ether_addr       bssid;
 
     google::InitGoogleLogging(argv[0]);
 
@@ -329,10 +332,34 @@ int main(int argc, char **argv)
             LOG(INFO) << "management packet parsing : succeed";
         }
         // (type data)
+        // DS status == 0x00 : dst / src / bssid
+        // DS status == 0x01 : bssid / src / dst
+        // DS status == 0x10 : dst / bssid / src
+        // DS status == 0x11 : Wireless Distribution System ???
         else
         {
+            data_pkt = (u_char *)packet + *(uint16_t *)(packet + 2); // packet + 2 : header length
+            ds_status = (*(uint8_t *)(packet + 1) >> 2) & 0x03;
+            switch(ds_status)
+            {
+            case 0x00: // dst / src / bssid
+                bssid = *(struct ether_addr *)(data_pkt + 16);
+                break;
+            case 0x01: // bssid / src / dst
+                bssid = *(struct ether_addr *)(data_pkt + 4);
+                break;               
+            case 0x02: // dst / bssid / src
+                bssid = *(struct ether_addr *)(data_pkt + 10);
+                break;
+            }
 
-        }
+            if(ap_info_map.find(ether_addr_hasher(bssid)) != ap_info_map.end())
+            {
+                ap_info = ap_info_map[ether_addr_hasher(bssid)];
+                ap_info.data_pkt_num++;
+                ap_info_map[ether_addr_hasher(bssid)] = ap_info;
+            }
+        }   
     }
     
     pthread_cancel(thread);
