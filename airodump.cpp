@@ -10,9 +10,10 @@
 #include <pthread.h>
 #include "IEEE80211.h"
 
-#define MAX_SSID_LEN                32
-#define REFRESH_TIME_INTERVAL       500000  // us
-#define AP_INFO_EXPIRE_TIME_LIMIT   10      // s
+#define MAX_SSID_LEN                        32
+#define REFRESH_TIME_INTERVAL               500000  // us
+#define PACKET_NUM_EXPIRE_TIME_INTERVAL     5       // s
+#define AP_INFO_EXPIRE_TIME_LIMIT           10      // s
 
 struct ap_info
 {
@@ -92,17 +93,18 @@ void *print_ap_info(void *)
 {
     struct ap_info ap_info;
     std::vector<unsigned int> keys;
-    int i;
+    int i, loop_cnt;
+    loop_cnt = 0;
     while(true)
     {
         system("clear");
 
         printf("%-20s%-10s%-12s%-10s%-10s%-10s%-10s%-10s%-18s%-20s\n", "BSSID", "#Beacon", "#Beacon/s", "#Data", "#Data/s", "Signal", "Noise", "Channel", "DataRate(Mb/s)", "SSID");
-        for(std::pair<int, struct ap_info> element : ap_info_map)
+        for(std::pair<unsigned int, struct ap_info> element : ap_info_map)
         {
             ap_info = element.second;
 
-            printf("%-20s%-10d%-12.01f%-10d%-10.01f%-10d%-10d%-10d%-18d%-20s\n", ether_ntoa(&ap_info.bssid), ap_info.beacon_pkt_num, (double)ap_info.beacon_pkt_num/(time(NULL)-ap_info.first_time), ap_info.data_pkt_num, (double)ap_info.data_pkt_num/(time(NULL)-ap_info.first_time), ap_info.ssi_signal, ap_info.ssi_noise, ap_info.channel, ap_info.data_rate, ap_info.ssid);
+            printf("%-20s%-10d%-12.02f%-10d%-10.02f%-10d%-10d%-10d%-18d%-20s\n", ether_ntoa(&ap_info.bssid), ap_info.beacon_pkt_num, (double)ap_info.beacon_pkt_num/(time(NULL)-ap_info.first_time), ap_info.data_pkt_num, (double)ap_info.data_pkt_num/(time(NULL)-ap_info.first_time), ap_info.ssi_signal, ap_info.ssi_noise, ap_info.channel, ap_info.data_rate, ap_info.ssid);
 
             if(ap_info.last_time < time(NULL) - AP_INFO_EXPIRE_TIME_LIMIT)
             {
@@ -116,6 +118,17 @@ void *print_ap_info(void *)
             ap_info_map.erase(keys[i]);
         }
 
+        loop_cnt = (loop_cnt + 1) % (PACKET_NUM_EXPIRE_TIME_INTERVAL * 1000000 / REFRESH_TIME_INTERVAL);
+        if(loop_cnt == 0)
+        {
+            for(std::pair<unsigned int, struct ap_info> element : ap_info_map)
+            {
+                ap_info_map[element.first].first_time       = time(NULL);
+                ap_info_map[element.first].beacon_pkt_num   = 0;
+                ap_info_map[element.first].data_pkt_num     = 0;
+            }        
+        }
+ 
         usleep(REFRESH_TIME_INTERVAL);
     }
     pthread_exit((void *) 0);
@@ -318,7 +331,7 @@ int main(int argc, char **argv)
         // (type data)
         else
         {
-            //printf("(type data)\n");
+
         }
     }
     
